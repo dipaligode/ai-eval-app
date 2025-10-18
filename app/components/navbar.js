@@ -31,7 +31,6 @@ export default function Navbar() {
         <Link href="/dashboard">Dashboard</Link>
         <Link href="/evals">Evaluations</Link>
         <Link href="/settings">Settings</Link>
-        <Link href="/profile">Profile</Link>
       </div>
       {user && (
         <button onClick={handleLogout} className="bg-red-500 px-2 py-1 rounded">

@@ -26,12 +26,7 @@ export default function SignupPage() {
       return
     }
 
-    // ✅ Create profile row
-    await supabase.from('profiles').insert([{
-      id: data.user.id,
-      email: data.user.email,
-      full_name: fullName
-    }])
+    
 
     setMessage('✅ Account created! Please check your email to confirm before logging in.')
   }
