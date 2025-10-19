@@ -1,5 +1,5 @@
 'use client'
-import { useState, useEffect } from 'react'
+import { useEffect, useState } from 'react'
 import { supabase } from '../../lib/supabaseClient'
 
 export default function SubmitEvalForm({ userId }) {
@@ -8,7 +8,6 @@ export default function SubmitEvalForm({ userId }) {
   const [score, setScore] = useState('')
   const [latency, setLatency] = useState('')
   const [flagsOptions, setFlagsOptions] = useState([])
-  const [selectedFlags, setSelectedFlags] = useState([])
   const [message, setMessage] = useState('')
   const [evalSettings, setEvalSettings] = useState(null)
 
@@ -26,7 +25,7 @@ export default function SubmitEvalForm({ userId }) {
     fetchSettings()
   }, [userId])
 
-  // 2️⃣ Fetch flags options
+  // 2️⃣ Fetch all flags
   useEffect(() => {
     async function fetchFlags() {
       const { data } = await supabase
@@ -37,28 +36,90 @@ export default function SubmitEvalForm({ userId }) {
     fetchFlags()
   }, [])
 
-  // 3️⃣ Handle submit
+  // 3️⃣ Auto-flagging function
+  function autoFlag(prompt, response, latencyMs, scoreVal) {
+    const flags = []
+
+    const lowerPrompt = prompt.toLowerCase()
+    const lowerResp = response.toLowerCase()
+
+    // Offensive / inappropriate content
+    const offensiveWords = ['hate', 'kill', 'inferior', 'stupid', 'dumb']
+    if (offensiveWords.some(word => lowerPrompt.includes(word) || lowerResp.includes(word))) {
+      flags.push(flagsOptions.find(f => f.name === 'offensive')?.id)
+    }
+
+    // Response too slow
+    if (latencyMs > 2000) { // example threshold: 2s
+      flags.push(flagsOptions.find(f => f.name === 'slow')?.id)
+    }
+
+    // Low quality
+    if (scoreVal < 0.5) { // example threshold
+      flags.push(flagsOptions.find(f => f.name === 'low_quality')?.id)
+    }
+
+    // Irrelevant: if response doesn’t include any words from prompt
+    const promptWords = prompt.split(/\s+/).filter(Boolean)
+    const containsPromptWords = promptWords.some(word => lowerResp.includes(word.toLowerCase()))
+    if (!containsPromptWords) {
+      flags.push(flagsOptions.find(f => f.name === 'irrelevant')?.id)
+    }
+
+    // Incomplete: response is too short
+    if (response.trim().length < 10) {
+      flags.push(flagsOptions.find(f => f.name === 'incomplete')?.id)
+    }
+
+    // Format error: response missing punctuation (example)
+    if (!response.trim().endsWith('.') && !response.trim().endsWith('?') && !response.trim().endsWith('!')) {
+      flags.push(flagsOptions.find(f => f.name === 'format_error')?.id)
+    }
+
+    // Plagiarized: (mock rule) if response contains "copied from" text
+    if (response.toLowerCase().includes('copied from')) {
+      flags.push(flagsOptions.find(f => f.name === 'plagiarized')?.id)
+    }
+
+    // Sensitive content / PII
+    if (/\S+@\S+\.\S+/.test(prompt) || /\S+@\S+\.\S+/.test(response)) {
+      flags.push(flagsOptions.find(f => f.name === 'contains_sensitive')?.id)
+    }
+
+    // Default safe if nothing else
+    if (flags.length === 0) {
+      flags.push(flagsOptions.find(f => f.name === 'safe')?.id)
+    }
+
+    return flags.filter(Boolean)
+  }
+
+  // 4️⃣ Handle submit
   async function handleSubmit(e) {
     e.preventDefault()
-
     if (!userId) return setMessage('❌ User not logged in')
 
-    // Check eval_settings rules (sample rate)
+    // Check sample rate
     if (evalSettings?.run_policy === 'sampled') {
       const sampleRate = evalSettings?.sample_rate_pct || 100
-      const random = Math.random() * 100
-      if (random > sampleRate) {
+      if (Math.random() * 100 > sampleRate) {
         return setMessage('⚠️ Evaluation skipped due to sample rate')
       }
     }
 
-    // Apply PII masking if enabled
+    // Mask PII
     let maskedResponse = response
+    let piiCount = 0
     if (evalSettings?.obfuscate_pii) {
+      const matches = maskedResponse.match(/\S+@\S+\.\S+/g) || []
+      piiCount = matches.length
       maskedResponse = maskedResponse.replace(/\S+@\S+\.\S+/g, '[REDACTED]')
     }
 
-    // Insert into evals table
+    // Auto-flag
+    const autoFlags = autoFlag(prompt, maskedResponse, parseInt(latency), parseFloat(score))
+
+    // Insert into DB
     const { data, error } = await supabase.from('evals').insert([
       {
         user_id: userId,
@@ -67,20 +128,18 @@ export default function SubmitEvalForm({ userId }) {
         response: maskedResponse,
         score: parseFloat(score),
         latency_ms: parseInt(latency),
-        flags: selectedFlags.map(f => ({ id: f })),
-        pii_tokens_redacted: (response.match(/\S+@\S+\.\S+/g) || []).length
+        flags: autoFlags,
+        pii_tokens_redacted: piiCount
       }
     ])
 
     if (error) setMessage('❌ Error: ' + error.message)
     else setMessage('✅ Evaluation submitted!')
 
-    // Clear form
     setPrompt('')
     setResponse('')
     setScore('')
     setLatency('')
-    setSelectedFlags([])
   }
 
   return (
@@ -88,57 +147,12 @@ export default function SubmitEvalForm({ userId }) {
       <h2 className="font-semibold text-lg mb-2">Submit Evaluation</h2>
       {message && <p className="text-sm text-green-600">{message}</p>}
 
-      <input
-        type="text"
-        placeholder="Prompt"
-        value={prompt}
-        onChange={e => setPrompt(e.target.value)}
-        className="w-full border p-2 rounded"
-        required
-      />
-      <input
-        type="text"
-        placeholder="Response"
-        value={response}
-        onChange={e => setResponse(e.target.value)}
-        className="w-full border p-2 rounded"
-        required
-      />
-      <input
-        type="number"
-        placeholder="Score (0–1)"
-        value={score}
-        onChange={e => setScore(e.target.value)}
-        className="w-full border p-2 rounded"
-        step="0.01"
-        min="0"
-        max="1"
-        required
-      />
-      <input
-        type="number"
-        placeholder="Latency (ms)"
-        value={latency}
-        onChange={e => setLatency(e.target.value)}
-        className="w-full border p-2 rounded"
-        required
-      />
+      <input type="text" placeholder="Prompt" value={prompt} onChange={e => setPrompt(e.target.value)} className="w-full border p-2 rounded" required />
+      <input type="text" placeholder="Response" value={response} onChange={e => setResponse(e.target.value)} className="w-full border p-2 rounded" required />
+      <input type="number" placeholder="Score (0–1)" value={score} onChange={e => setScore(e.target.value)} className="w-full border p-2 rounded" step="0.01" min="0" max="1" required />
+      <input type="number" placeholder="Latency (ms)" value={latency} onChange={e => setLatency(e.target.value)} className="w-full border p-2 rounded" required />
 
-      <label className="block text-sm font-medium">Flags:</label>
-      <select
-        multiple
-        value={selectedFlags}
-        onChange={e => setSelectedFlags(Array.from(e.target.selectedOptions, option => option.value))}
-        className="w-full border p-2 rounded"
-      >
-        {flagsOptions.map(f => (
-          <option key={f.id} value={f.id}>{f.name}</option>
-        ))}
-      </select>
-
-      <button type="submit" className="bg-blue-500 text-white px-4 py-2 rounded">
-        Submit
-      </button>
+      <button type="submit" className="bg-blue-500 text-white px-4 py-2 rounded">Submit</button>
     </form>
   )
 }
